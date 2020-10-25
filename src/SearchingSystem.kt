@@ -1,4 +1,5 @@
 import java.io.File
+import java.lang.StringBuilder
 
 class SearchingSystem(
     rawDocuments: List<Document>
@@ -25,7 +26,8 @@ class SearchingSystem(
                     matchResult.groups[0]?.run {
                         DocumentWord(
                             word = value.toLowerCase(),
-                            documentStartIndex = matchResult.range.first
+                            documentStartIndex = matchResult.range.first,
+                            documentEndIndex = matchResult.range.last
                         )
                     }
                 }
@@ -52,34 +54,38 @@ class SearchingSystem(
 
     fun searchByQuery(query: String): List<DocumentSearchResponse> {
         val queryWords = wordRegex.findAll(query)
-            .mapNotNull { matchResult ->
-                matchResult.groups[0]?.run {
-                    value.toLowerCase()
-                }
-            }
-            .filter { it.isNotEmpty() }
+            .mapNotNull { it.groups[0]?.value }
+            .filter { it.isNotEmpty() && !englishStopWords.contains(it) }
+            .map { QueryWord(it, stemmer.stemWord(it.toLowerCase())) }
             .toList()
 
-        // TODO: 25.10.2020 запихать в один лист с парами <word, stemmed>
-        val cleanQueryWords = queryWords.filter { !englishStopWords.contains(it) }
-
-        val stemmedQueryWords = cleanQueryWords.map { stemmer.stemWord(it) }
-
         return processedDocuments.map { document ->
+            val queryWordMatches = mutableListOf<Pair<String, List<DocumentWord>>>()
+            queryWords.forEach { (originalWord, stemmedWord) ->
+                val matchedWords = document.stemmedWords[stemmedWord] ?: listOf()
+                queryWordMatches.add(originalWord to matchedWords)
+            }
 
-            val queryWordMatches = mutableListOf<Pair<String, DocumentWord>>()
+            val highlightedContentBuilder = StringBuilder(document.content)
 
-            stemmedQueryWords.forEach { stemmedQueryWord ->
-                document.stemmedWords[stemmedQueryWord]?.forEach { documentMatchedWord ->
-                    queryWordMatches.add(stemmedQueryWord to documentMatchedWord)
+            queryWordMatches.forEach { (_, matchedWords) ->
+                matchedWords.forEach { word ->
+                    highlightedContentBuilder.replace(
+                        word.documentStartIndex,
+                        word.documentEndIndex + 1,
+                        highlightedContentBuilder.substring(word.documentStartIndex, word.documentEndIndex + 1)
+                            .toUpperCase()
+                    )
                 }
             }
 
             return@map DocumentSearchResponse(
-                documentName = document.name,
-                queryMatch = queryWordMatches
+                resultDocument = Document(name = document.name, content = highlightedContentBuilder.toString()),
+                queryMatch = queryWordMatches.sortedByDescending { it.second.size },
+                matchesCount = queryWordMatches.sumBy { it.second.size }
             )
         }
+            .sortedByDescending { it.matchesCount }
     }
 
     private fun readStopWords(): Set<String> {
@@ -88,16 +94,18 @@ class SearchingSystem(
             .filter { it.isNotEmpty() }
             .toSet()
     }
-
-
 }
 
-class DocumentSearchResponse(val documentName: String, val queryMatch: List<Pair<String, DocumentWord>>)
+data class QueryWord(val word: String, val stemmedWord: String)
 
-data class DocumentWord(val word: String, val documentStartIndex: Int) {
+class DocumentSearchResponse(
+    val resultDocument: Document,
+    val queryMatch: List<Pair<String, List<DocumentWord>>>,
+    val matchesCount: Int
+)
 
+data class DocumentWord(val word: String, val documentStartIndex: Int, val documentEndIndex: Int) {
     override fun hashCode(): Int = word.hashCode()
-
     override fun equals(other: Any?): Boolean {
         if (this === other) return true
         if (javaClass != other?.javaClass) return false
@@ -106,23 +114,7 @@ data class DocumentWord(val word: String, val documentStartIndex: Int) {
 
         if (word != other.word) return false
         if (documentStartIndex != other.documentStartIndex) return false
-
-        return true
-    }
-}
-
-data class StemmedWord(val value: String, val original: DocumentWord) {
-
-    override fun hashCode(): Int = value.hashCode()
-
-    override fun equals(other: Any?): Boolean {
-        if (this === other) return true
-        if (javaClass != other?.javaClass) return false
-
-        other as StemmedWord
-
-        if (value != other.value) return false
-        if (original != other.original) return false
+        if (documentEndIndex != other.documentEndIndex) return false
 
         return true
     }
